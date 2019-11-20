@@ -1,7 +1,7 @@
 ---
 title: "P8105 Data Science I - Homework 6"
 author: "Kevin S.W.   UNI: ksw2137"
-date: "`r format(System.time(), %x`"
+date: "`r format(Sys.time(), '%x')`"
 output: github_document
 ---
 
@@ -17,7 +17,6 @@ knitr::opts_chunk$set(echo = TRUE,
 # loaded packages; placed here to be able to load global settings
 Packages <- c("tidyverse", "dplyr", "modelr", "mgcv")
 invisible(lapply(Packages, library, character.only = TRUE))
-
 
 
 # global settings for color palettes
@@ -38,23 +37,26 @@ theme_set(theme_minimal() +
 ```
 
 # Problem 1
-First load our birthweight data. With 
+First load our birthweight data.
 
 ```{r birthweight}
 
 birthweight_df <- read_csv("./data/Birthweight.csv") %>% 
   janitor::clean_names() %>% 
   mutate_at(.vars = vars("babysex", "malform", # convert columns in vars() to factors
-                         "mrace", "pnumlbw", "pnumsga", "parity",
-                         "frace"
+                         "mrace", "frace"
                          ),   
-            .funs = funs(factor))
+            .funs = funs(factor)) %>% 
+  mutate(
+    babysex = fct_recode(babysex, male = "1", female = "2"),
+    malform = fct_recode(malform, absent = "0", present = "1")
+    )
 
-# skimr::skim(birthweight_df)                   # remove "#" to activate skimr check 
+skimr::skim(birthweight_df)                   # remove "#" to activate skimr check 
 
 ```
 
-After loading our birthweight data, we obtain a `r nrow(birthweight_df)` by `r ncol(birthweight_df)` dataset that all started as numeric variables. `babysex`, `malform`, `frace`, `mrace` were converted to categorical variables as they should. Count variables with small number of "groups" are also converted to categoricals. These are `parity`, `pnumlbw` and `pnumsga`. `skimr::skim()` reveals no missing variables. 
+After loading our birthweight data, we obtain a `r nrow(birthweight_df)` by `r ncol(birthweight_df)` dataset that all started as numeric variables. `babysex`, `malform`, `frace`, `mrace` were converted to categorical variables as they should. 
 
 Variables are:
 
@@ -82,14 +84,28 @@ Variables are:
   * `frace`: father’s race (1 = White, 2 = Black, 3 = Asian, 4 = Puerto Rican, 8 = Other, 9 = Unknown)
   * `fincome`: family monthly income (in hundreds, rounded)
 
+`skimr::skim()` reveals no missing variables. However, it reveals some variables that likely shouldn't even be considered; `pnumlbw` and `pnumsga`, though measures numbers of babies, only records `0` in this dataset.
+
 ### Model Proposal
-Given that the mother is the one "doing the most work", it is unlikely that the father's race plays a role so `frace` will not be considered. From the mom-related variables, `menarche` is likely unrelated to birth and if they are, , as well as `parity`. 
+Will attempt to make a model with `bwt` as our outcome. Looking at `skimr::skim()`'s histogram and combination with some plausible physiological relationships, initial model will contain `blength` (weight should increase with length), `gaweeks` (increased gestation period should result in more physical growth). `bhead` not included because likely correlated to `blength`. `babysex` will likely not be correlated for birthweight. `malform` should influence `bwt` but our skimr indicates that this variable is highly skewed.
+
+`wtgain` variable from mother could potentially be a factor. Correlation likely between mom's `delwt`, `wtgain`, `ppwt`, `ppbmi` so these other variables are not included. `mheight`, `momage`, `menarche`, `mrace`, `frace`, `parity`, `fincome` likely unrelated. `pnumlbw`, `pnumsga`, `smoken` removed because data points are either highly skewed or does not contain useful information.
 
 ```{r}
 
-# proposed model
+first_fit <- birthweight_df %>% 
+  lm(bwt ~ gaweeks + blength + wtgain, data = .)
+
+summary(first_fit)
+
+first_fit %>% 
+  broom::glance()
+
+first_fit %>% 
+  broom::tidy()
 
 ```
+
 
 Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
 
@@ -107,6 +123,8 @@ birthweight_df %>%
 model1 <- birthweight_df %>% 
   lm(bwt ~ blength + gaweeks, data = .)
 
+summary(model1)
+
 ```
 
 
@@ -116,6 +134,11 @@ model1 <- birthweight_df %>%
 
 model2 <- birthweight_df %>% 
   lm(bwt ~ bhead * blength * babysex, data = .)
+
+
+summary(first_fit)
+summary(model1)
+summary(model2)
 
 ```
 
@@ -144,12 +167,38 @@ weather_df <-
 
 ```
 
+After loading the data, we should clean it up a bit and only select the things we need.
+
+```{r}
+
+clean_weather_df <- weather_df %>% 
+  select(name, tmax, tmin) %>% 
+  mutate(
+    name = str_replace(name, "CentralPark_NY", "cp_ny")
+  )
+
+```
+
+After cleaning, we will do the bootstrap
+
+```{r}
+
+bootstrap_runs <- clean_weather_df %>% 
+  bootstrap(n = 5000) %>% 
+  mutate(
+    model = map(strap, ~lm(tmax ~ tmin, data = .x)),
+    result = map(model, broom::tidy),
+    stat = map(model, broom::glance)
+  )
+
+clean_strap <- bootstrap_runs %>% 
+  select(-model, -strap) %>% 
+  unnest()
+
+```
 
 
-The boostrap is helpful when you’d like to perform inference for a parameter / value / summary that doesn’t have an easy-to-write-down distribution in the usual repeated sampling framework. We’ll focus on a simple linear regression with tmax as the response and tmin as the predictor, and are interested in the distribution of two quantities estimated from these data:
 
 r̂ 2
 log(β̂ 0∗β̂ 1)
 Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities. Plot the distribution of your estimates, and describe these in words. Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r̂ 2 and log(β̂ 0∗β̂ 1). Note: broom::glance() is helpful for extracting r̂ 2 from a fitted regression, and broom::tidy() (with some additional wrangling) should help in computing log(β̂ 0∗β̂ 1).
-
-Optional post-assignment survey
