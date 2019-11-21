@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE,
                       )
 
 # loaded packages; placed here to be able to load global settings
-Packages <- c("tidyverse", "dplyr", "modelr", "mgcv")
+Packages <- c("tidyverse", "dplyr", "modelr", "mgcv", "patchwork")
 invisible(lapply(Packages, library, character.only = TRUE))
 
 
@@ -147,7 +147,7 @@ Make this comparison in terms of the cross-validated prediction error; use cross
 
 Note that although we expect your model to be reasonable, model building itself is not a main idea of the course and we don’t necessarily expect your model to be “optimal"
 
-# Problem 2
+# Problem 2 - Weather Data
 In this problem we'll be using weather data for Central Park, NY in 2017. Code adopted from homework website. 
 
 ```{r CP_2017_load, cache = TRUE}
@@ -167,38 +167,66 @@ weather_df <-
 
 ```
 
-After loading the data, we should clean it up a bit and only select the things we need.
+After loading the data, we should clean it up a bit and only select the things we need before running a bootstrap and obtaining the r̂-squared for each resampling as well as log(beta0*beta1). 
 
-```{r}
+### Data cleaning and bootstrapping
 
+```{r df_clean}
+
+# selects relevant columns and renames Central Park to cp_ny for simplicity
 clean_weather_df <- weather_df %>% 
   select(name, tmax, tmin) %>% 
   mutate(
     name = str_replace(name, "CentralPark_NY", "cp_ny")
   )
 
-```
-
-After cleaning, we will do the bootstrap
-
-```{r}
-
+# runs bootstrap x5000
 bootstrap_runs <- clean_weather_df %>% 
   bootstrap(n = 5000) %>% 
   mutate(
-    model = map(strap, ~lm(tmax ~ tmin, data = .x)),
-    result = map(model, broom::tidy),
-    stat = map(model, broom::glance)
+    model = map(strap, ~lm(tmax ~ tmin, data = .x)),      # obtains model for each strap sample
+    result = map(model, broom::tidy),                     # obtains estimate data from each model
+    stat = map(model, broom::glance)                      # obtains statistics from each model
   )
 
+# a cleaned and filtered df containing variables of interest
 clean_strap <- bootstrap_runs %>% 
-  select(-model, -strap) %>% 
-  unnest()
+  select(-model, -strap) %>%                              # removed the original strap sample and model
+  rename("strap_run" = .id) %>%                           # renamed id to "run numbers"
+  unnest() %>%                                            # unnest the tibbles that remained
+  select(strap_run, term, estimate, adj.r.squared) %>%    # selected relevant measures
+  mutate(
+    term = case_when(term == "(Intercept)" ~ "beta0",     # renamed intercept to beta0
+                     term == "tmin" ~ "beta1",            # renamed slope to beta1
+                     TRUE ~ as.character(term))
+  ) %>% 
+  pivot_wider(names_from = term,                          # put the betas into different columns
+              values_from = estimate) %>% 
+  mutate(
+    estimate_log = log(beta0 * beta1)                     # add column for the ln(b0 * b1)
+  )
 
 ```
 
+After cleaning and bootstrapping, we isolated only the variables we're interested in, which is stored in `unnested_clean_strap`, we can check their distribution using a simple density plot below
 
+```{r}
 
-r̂ 2
-log(β̂ 0∗β̂ 1)
-Use 5000 bootstrap samples and, for each bootstrap sample, produce estimates of these two quantities. Plot the distribution of your estimates, and describe these in words. Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r̂ 2 and log(β̂ 0∗β̂ 1). Note: broom::glance() is helpful for extracting r̂ 2 from a fitted regression, and broom::tidy() (with some additional wrangling) should help in computing log(β̂ 0∗β̂ 1).
+# density plot of 
+r_squared_plot <- unnested_clean_strap %>% 
+  ggplot(aes(x = adj.r.squared)) +
+  geom_density(color = "seagreen2", fill = "seagreen2", alpha = 0.3)
+
+estimate_log_plot <- unnested_clean_strap %>% 
+  ggplot(aes(x = estimate_log)) +
+  geom_density(color = "steelblue1", fill = "steelblue1", alpha = 0.3)
+
+r_squared_plot + estimate_log_plot
+
+```
+
+Plot suggests that both the r-squared and log(beta0 * beta1) are normally distributed. However, note that there is a very slight left skew on the distribution of r-squared, which shouldn't greatly deviate from our assumptions of normality. 
+
+We can build 
+
+Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r̂ 2 and log(β̂ 0∗β̂ 1). Note: broom::glance() is helpful for extracting r̂ 2 from a fitted regression, and broom::tidy() (with some additional wrangling) should help in computing log(β̂ 0∗β̂ 1).
