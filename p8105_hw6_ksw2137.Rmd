@@ -8,16 +8,14 @@ output: github_document
 ```{r setup, include = FALSE, message = FALSE, warning = FALSE}
 
 # global default settings for chunks
-knitr::opts_chunk$set(echo = TRUE, 
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
                       fig.width = 10, 
-                      fig.align = "center",
-                      results = "asis"
+                      fig.align = "center"
                       )
 
 # loaded packages; placed here to be able to load global settings
-Packages <- c("tidyverse", "dplyr", "modelr", "mgcv", "patchwork")
+Packages <- c("tidyverse", "dplyr", "modelr", "mgcv", "patchwork", "corrplot", "scales")
 invisible(lapply(Packages, library, character.only = TRUE))
-
 
 # global settings for color palettes
 options(
@@ -31,7 +29,8 @@ scale_fill_discrete = scale_fill_viridis_d
 theme_set(theme_minimal() + 
             theme(legend.position = "bottom") +
             theme(plot.title = element_text(hjust = 0.5, size = 12),
-                  plot.subtitle = element_text(hjust = 0.5, size = 8))
+                  plot.subtitle = element_text(hjust = 0.5, size = 8),
+                  plot.caption = element_text(hjust = 0))
           )
 
 ```
@@ -41,6 +40,7 @@ First load our birthweight data.
 
 ```{r birthweight}
 
+# reading in source data
 birthweight_df <- read_csv("./data/Birthweight.csv") %>% 
   janitor::clean_names() %>% 
   mutate_at(.vars = vars("babysex", "malform", # convert columns in vars() to factors
@@ -52,11 +52,11 @@ birthweight_df <- read_csv("./data/Birthweight.csv") %>%
     malform = fct_recode(malform, absent = "0", present = "1")
     )
 
-skimr::skim(birthweight_df)                   # remove "#" to activate skimr check 
+#skimr::skim(birthweight_df)                   # remove "#" to activate skimr check 
 
 ```
 
-After loading our birthweight data, we obtain a `r nrow(birthweight_df)` by `r ncol(birthweight_df)` dataset that all started as numeric variables. `babysex`, `malform`, `frace`, `mrace` were converted to categorical variables as they should. 
+After loading our birthweight data, we obtain a `r nrow(birthweight_df)` by `r ncol(birthweight_df)` dataset that all started as numeric variables. `babysex`, `malform`, `frace`, `mrace` were converted to categorical variables as they should.
 
 Variables are:
 
@@ -87,65 +87,133 @@ Variables are:
 `skimr::skim()` reveals no missing variables. However, it reveals some variables that likely shouldn't even be considered; `pnumlbw` and `pnumsga`, though measures numbers of babies, only records `0` in this dataset.
 
 ### Model Proposal
-Will attempt to make a model with `bwt` as our outcome. Looking at `skimr::skim()`'s histogram and combination with some plausible physiological relationships, initial model will contain `blength` (weight should increase with length), `gaweeks` (increased gestation period should result in more physical growth). `bhead` not included because likely correlated to `blength`. `babysex` will likely not be correlated for birthweight. `malform` should influence `bwt` but our skimr indicates that this variable is highly skewed.
+We will attempt to make a model with `bwt` as our outcome of interest. Given that there are a lot of variables related to each other, there are likely a lot of correlations. We can then use a correlation matrix to see which variables are highly correlated and we can pick one out of those groups.
 
-`wtgain` variable from mother could potentially be a factor. Correlation likely between mom's `delwt`, `wtgain`, `ppwt`, `ppbmi` so these other variables are not included. `mheight`, `momage`, `menarche`, `mrace`, `frace`, `parity`, `fincome` likely unrelated. `pnumlbw`, `pnumsga`, `smoken` removed because data points are either highly skewed or does not contain useful information.
+```{r cor_plot}
 
-```{r}
-
-first_fit <- birthweight_df %>% 
-  lm(bwt ~ gaweeks + blength + wtgain, data = .)
-
-summary(first_fit)
-
-first_fit %>% 
-  broom::glance()
-
-first_fit %>% 
-  broom::tidy()
+# correlation matrix
+select_if(birthweight_df, is.numeric) %>%     # select numeric variables
+  cor() %>%                                   # get the correlation values
+  corrplot()                                  # make the correlation matrix
 
 ```
 
+Based on the plot above, we see that variables most correlated to `bwt` is `bhead`, `blength`, `delwt`, `gaweeks`, `wtgain`, `mheight`, and `ppwt`. However, we also note that `delwt` is highly correlated with `ppwt`. Given that `delwt` is more correlated to `bwt`, we'll keep `delwt` and drop `ppwt`. It is also slightly correlated to `wtgain`, so we'll drop `wtgain` (lower collinearity to `bwt`) to prevent collinearity. Finally, we would think that `mrace` (mother's race/ethnicity) might also influence a baby's weight (genetically related). So our proposed model:
 
-Propose a regression model for birthweight. This model may be based on a hypothesized structure for the factors that underly birthweight, on a data-driven model-building process, or a combination of the two. Describe your modeling process and show a plot of model residuals against fitted values – use add_predictions and add_residuals in making this plot.
+* Proposed model: `bhead`, `blength`, `delwt`, `gaweeks`, and `mrace`; main effects only.
 
-Compare your model to two others:
+```{r model_build}
+
+# our first model try
+first_fit_lm <- birthweight_df %>% 
+  lm(bwt ~ bhead + blength + delwt + gaweeks + mrace, data = .)
+
+# AIC, R-squared, etc
+first_fit_lm %>% 
+  broom::glance() %>% 
+  knitr::kable()
+
+```
+
+Using `broom::glance()` shows that our adjusted R-squared is at a pretty good value of `r round(summary(first_fit_lm)["adj.r.squared"], 3)`, which means `r round(summary(first_fit_lm)["adj.r.squared"], 3) * 100`% of the variability in `bwt` is explained by our covariates. 
+
+```{r summary_stats}
+
+# statistics of each coefficient
+first_fit_lm %>% 
+  broom::tidy() %>% 
+  mutate(
+    term = str_replace(term, "^mrace", "Mom's Race: "),
+    term = str_replace(term, c("1", "2", "3", "4"), c("white", "black", "asian", "puerto rican")),
+    p.value = scales::scientific(p.value, digits = 3)
+    ) %>% 
+  knitr::kable()
+
+```
+
+We see from our coefficient summary that each variable have a significant p < 0.05 except for Asian mothers (White as the reference race)
+
+### Checking assumptions
+
+We then check our normality assumption of our model by plotting residuals vs. fitted values.
+
+```{r}
+
+
+birthweight_df %>% 
+  add_residuals(first_fit_lm) %>% 
+  add_predictions(first_fit_lm) %>% 
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point(alpha = 0.2, color = "steelblue1") +
+  geom_smooth(method = "lm", color = "red") +
+  labs(x = "Fitted Birth Weight (grams)",
+       y = "Residuals",
+       caption = "Figure 2: Scatterplot of Residuals vs. Fitted prediction values")
+
+```
+
+This is great since we see that our scatter plot seems to be centered at 0 without much variability. This means that our assumption of normality holds.
+
+### Model validation
+We can then compare our model to the other two proposed models: 
 
 * Model 1: length at birth, gestational age as predictors (main effects only)
 
-```{r}
+```{r model1}
 
-birthweight_df %>% 
-  ggplot(aes(x = wtgain, y = bwt, color = menarche)) +
-  geom_point(alpha = 0.3) +
-  geom_smooth(method = "lm")
-
+# comparison model 1
 model1 <- birthweight_df %>% 
   lm(bwt ~ blength + gaweeks, data = .)
 
-summary(model1)
-
 ```
-
 
 * Model 2: head circumference, length, sex, and all interactions (including the three-way interaction) between these
 
-```{r}
+```{r model2}
 
+# comparison model 2
 model2 <- birthweight_df %>% 
   lm(bwt ~ bhead * blength * babysex, data = .)
 
+```
 
-summary(first_fit)
-summary(model1)
-summary(model2)
+We will use cross validation in order to compare our models with these two by looking for the lowest RMSE. 
+
+```{r}
+
+cv_df <- crossv_mc(birthweight_df, 1000) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+trained_cv_df <- cv_df %>% 
+  mutate(
+    prop_lm = map(train, ~lm(bwt ~ bhead + blength + delwt + gaweeks + mrace, data = .x)),
+    mod1_lm = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    mod2_lm = map(train, ~lm(bwt ~ bhead * blength * babysex, data = .x)))
+    
+
+trained_cv_df <- trained_cv_df %>% 
+  mutate(
+    rmse_prop = map2_dbl(prop_lm, test, ~rmse(model = .x, data = .y)),
+    rmse_mod1 = map2_dbl(mod1_lm, test, ~rmse(model = .x, data = .y)),
+    rmse_mod2 = map2_dbl(mod2_lm, test, ~rmse(model = .x, data = .y))
+    )
+
+
+trained_cv_df %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(everything(),
+               names_to = "model", 
+               values_to = "rmse",
+               names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse, color = model, fill = model)) + 
+  geom_violin(alpha = 0.3)
 
 ```
 
-
-Make this comparison in terms of the cross-validated prediction error; use crossv_mc and functions in purrr as appropriate.
-
-Note that although we expect your model to be reasonable, model building itself is not a main idea of the course and we don’t necessarily expect your model to be “optimal"
 
 # Problem 2 - Weather Data
 In this problem we'll be using weather data for Central Park, NY in 2017. Code adopted from homework website. 
@@ -169,8 +237,6 @@ weather_df <-
 
 After loading the data, we should clean it up a bit and only select the things we need before running a bootstrap and obtaining the r̂-squared for each resampling as well as log(beta0*beta1). 
 
-### Data cleaning and bootstrapping
-
 ```{r df_clean}
 
 # selects relevant columns and renames Central Park to cp_ny for simplicity
@@ -182,7 +248,7 @@ clean_weather_df <- weather_df %>%
 
 # runs bootstrap x5000
 bootstrap_runs <- clean_weather_df %>% 
-  bootstrap(n = 5000) %>% 
+  bootstrap(n = 5) %>% 
   mutate(
     model = map(strap, ~lm(tmax ~ tmin, data = .x)),      # obtains model for each strap sample
     result = map(model, broom::tidy),                     # obtains estimate data from each model
@@ -190,7 +256,7 @@ bootstrap_runs <- clean_weather_df %>%
   )
 
 # a cleaned and filtered df containing variables of interest
-clean_strap <- bootstrap_runs %>% 
+clean_weather_strap <- bootstrap_runs %>% 
   select(-model, -strap) %>%                              # removed the original strap sample and model
   rename("strap_run" = .id) %>%                           # renamed id to "run numbers"
   unnest() %>%                                            # unnest the tibbles that remained
@@ -204,29 +270,53 @@ clean_strap <- bootstrap_runs %>%
               values_from = estimate) %>% 
   mutate(
     estimate_log = log(beta0 * beta1)                     # add column for the ln(b0 * b1)
-  )
+  ) %>% 
+  janitor::clean_names()
 
 ```
 
-After cleaning and bootstrapping, we isolated only the variables we're interested in, which is stored in `unnested_clean_strap`, we can check their distribution using a simple density plot below
+After cleaning and bootstrapping, we isolated only the variables we're interested in, which is stored in `clean_weather_strap` that contains `r nrow(clean_weather_strap)` observations for `adj_r_squared`, `beta0`, `beta1`, and `estimate_log` labeled by `strap_run`. We can check their distribution using a simple density plot below.
 
-```{r}
+```{r density_plots}
 
-# density plot of 
-r_squared_plot <- unnested_clean_strap %>% 
-  ggplot(aes(x = adj.r.squared)) +
-  geom_density(color = "seagreen2", fill = "seagreen2", alpha = 0.3)
+# density plot of r-squared with 2.5% and 97.5% quantile labeled
+r_squared_plot <- clean_weather_strap %>% 
+  ggplot(aes(x = adj_r_squared)) +
+  geom_density(color = "seagreen2", fill = "seagreen2", alpha = 0.3) +
+  geom_vline(xintercept = c(quantile(pull(clean_weather_strap, adj_r_squared), probs = 0.025),
+                            quantile(pull(clean_weather_strap, adj_r_squared), probs = 0.975)),
+             linetype = "dashed",
+             color = "red") +
+  labs(x = "Adjusted R-squared",
+       y = "Frequency",
+       caption = "Distribution of adjusted R-squared (left) and ln(β̂1 * β̂) (right)")
 
-estimate_log_plot <- unnested_clean_strap %>% 
+# density plot of ln(beta0 * beta1) with 2.5% and 97.5% quantile labeled
+estimate_log_plot <- clean_weather_strap %>% 
   ggplot(aes(x = estimate_log)) +
-  geom_density(color = "steelblue1", fill = "steelblue1", alpha = 0.3)
+  geom_density(color = "steelblue1", fill = "steelblue1", alpha = 0.3) +
+  geom_vline(xintercept = c(quantile(pull(clean_weather_strap, estimate_log), probs = 0.025),
+                            quantile(pull(clean_weather_strap, estimate_log), probs = 0.975)),
+             linetype = "dashed",
+             color = "red") +
+  labs(x = "ln(β̂1 * β̂0)",
+       y = "Frequency")
 
+# use patchwork to print them side-by-side
 r_squared_plot + estimate_log_plot
 
 ```
 
-Plot suggests that both the r-squared and log(beta0 * beta1) are normally distributed. However, note that there is a very slight left skew on the distribution of r-squared, which shouldn't greatly deviate from our assumptions of normality. 
+Plot suggests that both the r-squared and log(beta0 * beta1) are normally distributed. However, note that there is a very slight left skew on the distribution of r-squared, which shouldn't greatly deviate from our assumptions of normality. The red, dashed line represents our 2.5% and 97.5% quantile which are obtained using the `quantile()` function below.
 
-We can build 
+```{r quantiles, message = TRUE}
 
-Using the 5000 bootstrap estimates, identify the 2.5% and 97.5% quantiles to provide a 95% confidence interval for r̂ 2 and log(β̂ 0∗β̂ 1). Note: broom::glance() is helpful for extracting r̂ 2 from a fitted regression, and broom::tidy() (with some additional wrangling) should help in computing log(β̂ 0∗β̂ 1).
+# r-sq 95% CI
+quantile(pull(clean_weather_strap, adj_r_squared), probs = c(0.025, 0.975))
+
+# est_log 95% CI
+quantile(pull(clean_weather_strap, estimate_log), probs = c(0.025, 0.975))
+
+```
+
+As such, we have a 95% CI of [0.893, 0.927] for adjusted R-squared and [1.966, 2.058] for ln(β̂1 * β̂0).
