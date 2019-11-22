@@ -35,10 +35,13 @@ theme_set(theme_minimal() +
 
 ```
 
-# Problem 1
+# Problem 1 - Birth Weight Modelling
 First load our birthweight data.
 
 ```{r birthweight}
+
+# though this part doesn't require seed, will set here because further problem requires it.
+set.seed(2)
 
 # reading in source data
 birthweight_df <- read_csv("./data/Birthweight.csv") %>% 
@@ -115,11 +118,12 @@ first_fit_lm %>%
 
 ```
 
-Using `broom::glance()` shows that our adjusted R-squared is at a pretty good value of `r round(summary(first_fit_lm)["adj.r.squared"], 3)`, which means `r round(summary(first_fit_lm)["adj.r.squared"], 3) * 100`% of the variability in `bwt` is explained by our covariates. 
+Using `broom::glance()` shows that our adjusted R-squared is at a pretty good value of `r round(first_fit_lm %>% broom::glance() %>% select(adj.r.squared), 3)`, which means `r round(first_fit_lm %>% broom::glance() %>% select(adj.r.squared), 3) * 100`% of the variability in `bwt` is explained by our covariates. 
 
 ```{r summary_stats}
 
 # statistics of each coefficient
+# as well as replacing the label to be more explicit
 first_fit_lm %>% 
   broom::tidy() %>% 
   mutate(
@@ -131,24 +135,23 @@ first_fit_lm %>%
 
 ```
 
-We see from our coefficient summary that each variable have a significant p < 0.05 except for Asian mothers (White as the reference race)
+We see from our coefficient summary that each variable have a significant p < 0.05 except for Asian mothers (White as the reference race). appears to be a reasonable compromise. 
 
 ### Checking assumptions
 
 We then check our normality assumption of our model by plotting residuals vs. fitted values.
 
-```{r}
-
+```{r resid_fitted_plot}
 
 birthweight_df %>% 
-  add_residuals(first_fit_lm) %>% 
-  add_predictions(first_fit_lm) %>% 
+  add_residuals(first_fit_lm) %>%                   # adding residuals to our df
+  add_predictions(first_fit_lm) %>%                 # add predictions using our df
   ggplot(aes(x = pred, y = resid)) +
   geom_point(alpha = 0.2, color = "steelblue1") +
   geom_smooth(method = "lm", color = "red") +
   labs(x = "Fitted Birth Weight (grams)",
        y = "Residuals",
-       caption = "Figure 2: Scatterplot of Residuals vs. Fitted prediction values")
+       caption = "Figure 2: Scatterplot of residuals vs. fitted prediction values")
 
 ```
 
@@ -177,43 +180,52 @@ model2 <- birthweight_df %>%
 
 ```
 
-We will use cross validation in order to compare our models with these two by looking for the lowest RMSE. 
+We will use cross validation in order to compare our models with these two by looking for the lowest RMSE as we are trying to evaluate the effects of various variables on birth weight.
 
-```{r}
+```{r cross_validate}
 
+# splitting our df into the default 80:20 
 cv_df <- crossv_mc(birthweight_df, 1000) %>% 
-  mutate(
+  mutate(                                     # converts the resulting lists into tibbles
     train = map(train, as_tibble),
     test = map(test, as_tibble)
   )
 
+
+# split process to relief some processing power
+# applies model estimation to each dataset with the 3 models
 trained_cv_df <- cv_df %>% 
   mutate(
     prop_lm = map(train, ~lm(bwt ~ bhead + blength + delwt + gaweeks + mrace, data = .x)),
     mod1_lm = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
     mod2_lm = map(train, ~lm(bwt ~ bhead * blength * babysex, data = .x)))
     
-
+# obtain rmse for each dataset in each model-set
 trained_cv_df <- trained_cv_df %>% 
   mutate(
-    rmse_prop = map2_dbl(prop_lm, test, ~rmse(model = .x, data = .y)),
-    rmse_mod1 = map2_dbl(mod1_lm, test, ~rmse(model = .x, data = .y)),
-    rmse_mod2 = map2_dbl(mod2_lm, test, ~rmse(model = .x, data = .y))
+    rmse_Proposed = map2_dbl(prop_lm, test, ~rmse(model = .x, data = .y)),
+    rmse_Model1 = map2_dbl(mod1_lm, test, ~rmse(model = .x, data = .y)),
+    rmse_Model2 = map2_dbl(mod2_lm, test, ~rmse(model = .x, data = .y))
     )
 
-
+# plots distribution of rmse by each model
 trained_cv_df %>% 
-  select(starts_with("rmse")) %>% 
+  select(starts_with("rmse")) %>%              # select the rmse columns
   pivot_longer(everything(),
                names_to = "model", 
                values_to = "rmse",
                names_prefix = "rmse_") %>% 
-  mutate(model = fct_inorder(model)) %>% 
+  mutate(model = fct_inorder(model)) %>%       # arrange by model
   ggplot(aes(x = model, y = rmse, color = model, fill = model)) + 
-  geom_violin(alpha = 0.3)
+  geom_violin(alpha = 0.3) +
+  labs(x = "Model",
+       y = "Root Mean Squared Error",
+       caption = "Figure 3: Comparison of the RMSE distribution between models") +
+  theme(legend.position = "none")
 
 ```
 
+Per our plot above, it appears that our proposed model have the lowest RMSE. Given this result, I would recommend the model that contains `bhead`, `blength`, `delwt`, `gaweeks`, and `mrace` as main effects only.
 
 # Problem 2 - Weather Data
 In this problem we'll be using weather data for Central Park, NY in 2017. Code adopted from homework website. 
@@ -240,15 +252,12 @@ After loading the data, we should clean it up a bit and only select the things w
 ```{r df_clean}
 
 # selects relevant columns and renames Central Park to cp_ny for simplicity
-clean_weather_df <- weather_df %>% 
+strapped_weather_df <- weather_df %>% 
   select(name, tmax, tmin) %>% 
   mutate(
     name = str_replace(name, "CentralPark_NY", "cp_ny")
-  )
-
-# runs bootstrap x5000
-bootstrap_runs <- clean_weather_df %>% 
-  bootstrap(n = 5) %>% 
+  ) %>% 
+  bootstrap(n = 5000) %>%                                 # runs bootstrap x5000
   mutate(
     model = map(strap, ~lm(tmax ~ tmin, data = .x)),      # obtains model for each strap sample
     result = map(model, broom::tidy),                     # obtains estimate data from each model
@@ -256,7 +265,7 @@ bootstrap_runs <- clean_weather_df %>%
   )
 
 # a cleaned and filtered df containing variables of interest
-clean_weather_strap <- bootstrap_runs %>% 
+clean_weather_strap <- strapped_weather_df %>% 
   select(-model, -strap) %>%                              # removed the original strap sample and model
   rename("strap_run" = .id) %>%                           # renamed id to "run numbers"
   unnest() %>%                                            # unnest the tibbles that remained
@@ -309,7 +318,7 @@ r_squared_plot + estimate_log_plot
 
 Plot suggests that both the r-squared and log(beta0 * beta1) are normally distributed. However, note that there is a very slight left skew on the distribution of r-squared, which shouldn't greatly deviate from our assumptions of normality. The red, dashed line represents our 2.5% and 97.5% quantile which are obtained using the `quantile()` function below.
 
-```{r quantiles, message = TRUE}
+```{r quantiles}
 
 # r-sq 95% CI
 quantile(pull(clean_weather_strap, adj_r_squared), probs = c(0.025, 0.975))
